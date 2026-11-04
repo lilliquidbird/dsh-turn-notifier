@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Completion Notifier",
+    "description": "Shows a toast in the bottom-right corner and plays a short chime when a session finishes its turn; click to jump back to that conversation."
+  }
+}

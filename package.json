@@ -1,0 +1,47 @@
+{
+  "name": "@local/dsh-turn-notifier",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "description": "ChatGPT-style completion and question alerts with a chime for DeepSeek Harness: a bottom-right toast and a Windows notification when a session finishes its turn or needs your answer.",
+  "license": "MIT",
+  "author": "lilliquidbird",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lilliquidbird/dsh-turn-notifier.git"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "notification",
+    "toast",
+    "desktop"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
