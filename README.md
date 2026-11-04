@@ -83,6 +83,10 @@ plugin_manager install_bundle  target = <这个目录的绝对路径>
 
 数据不会离开这台机器。唯一的"外部"去处是 Windows 通知中心（`Notification` API）——它同样在本机。
 
+注意：系统通知的正文带着**会话标题和提问原文**，它会被 Windows 写进通知中心的历史记录并长期留存
+（`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`）。共享屏幕、录屏或别人用这台机器时会看到；
+在意的话可以关掉「系统通知」开关，或在 Windows 设置 → 系统 → 通知里关闭通知历史。
+
 ## 已知限制
 
 - 设置存在 cookie 而不是 localStorage：DSH 桌面版每次启动端口随机，localStorage 按 origin 隔离会丢设置，cookie 不区分端口。

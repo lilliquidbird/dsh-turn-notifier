@@ -99,6 +99,8 @@ window.__ModuleLoader__.load({
         },
         diagSystem: (text) => '系统通知：' + text,
         diagSource: (text) => '数据源：' + text,
+        diagProjectionOn: '投影 ✓',
+        diagProjectionOff: '投影 ✗',
         diagSystemCount: (shown, failed) => '通知已弹出 ' + shown + ' 次 · 失败 ' + failed + ' 次',
         systemState: {
           default: '待授权（点一次「测试系统通知」）',
@@ -176,6 +178,8 @@ window.__ModuleLoader__.load({
         },
         diagSystem: (text) => 'System notification: ' + text,
         diagSource: (text) => 'Data source: ' + text,
+        diagProjectionOn: 'projections ✓',
+        diagProjectionOff: 'projections ✗',
         diagSystemCount: (shown, failed) => 'toasts shown ' + shown + ' · failed ' + failed,
         systemState: {
           default: 'not granted yet (press the test button once)',
@@ -413,6 +417,25 @@ window.__ModuleLoader__.load({
       return fallback;
     }
 
+    /**
+     * The Session the main panel is showing, or undefined when nothing is.
+     *
+     * The list snapshot has no `current` field: DSH marks the displayed Session
+     * with `retainedBy.mainView` and stops counting it while a panel covers the
+     * conversation. Reading `catalog.current` instead always yielded undefined,
+     * so the "do not disturb the Session you are watching" path never ran.
+     */
+    function currentSessionId(byId, panelActive) {
+      if (panelActive === true) return undefined;
+      for (const id of Object.keys(byId)) {
+        const summary = byId[id];
+        if (!summary || typeof summary !== 'object') continue;
+        const retained = summary.retainedBy;
+        if (retained && retained.mainView > 0) return id;
+      }
+      return undefined;
+    }
+
     function detectLanguage(localeService) {
       try {
         const snapshot =
@@ -513,10 +536,24 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /** Release the audio graph; a disabled plugin must not leave one open. */
+      const release = () => {
+        const audio = context;
+        context = null;
+        if (audio === null || typeof audio.close !== 'function') return;
+        try {
+          const closed = audio.close();
+          if (closed && typeof closed.catch === 'function') closed.catch(() => {});
+        } catch (error) {
+          /* already closed */
+        }
+      };
+
       return {
         unlock: () => {
           ensure();
         },
+        close: release,
         play: (volume, style) => {
           const audio = ensure();
           if (audio === null || audio.state !== 'running') return false;
@@ -546,21 +583,32 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Ask for the Notification permission when it is still undecided.
+     * @returns the settled permission, so a caller can act after the prompt
+     *   instead of racing it.
+     */
     function requestNotificationPermission() {
       const state = currentNotificationPermission();
       diagnosticsStore.patch({ permission: state });
-      if (state !== 'default') return;
+      if (state !== 'default') return Promise.resolve(state);
       try {
         const result = window.Notification.requestPermission();
         if (result && typeof result.then === 'function') {
-          result
-            .then((value) => {
-              diagnosticsStore.patch({ permission: value === 'granted' ? 'granted' : 'denied' });
-            })
-            .catch(() => {});
+          return result.then(
+            (value) => {
+              const next = value === 'granted' ? 'granted' : 'denied';
+              diagnosticsStore.patch({ permission: next });
+              return next;
+            },
+            () => 'default'
+          );
         }
+        /* Legacy callback form: it returns nothing and reports through the callback. */
+        return Promise.resolve('default');
       } catch (error) {
         /* keep 'default'; the next attempt may still succeed */
+        return Promise.resolve('default');
       }
     }
 
@@ -849,12 +897,14 @@ window.__ModuleLoader__.load({
                     body: strings.systemDemoBody,
                     tag: 'turn-notifier:preview',
                   });
-                if (currentNotificationPermission() === 'default') {
-                  requestNotificationPermission();
-                  window.setTimeout(fire, 400);
-                } else {
+                if (currentNotificationPermission() !== 'default') {
                   fire();
+                  return;
                 }
+                /* Wait for the prompt: a fixed delay raced a slow "Allow". */
+                requestNotificationPermission().then((state) => {
+                  if (state === 'granted') fire();
+                });
               },
             },
             strings.testSystemNotify
@@ -882,7 +932,13 @@ window.__ModuleLoader__.load({
           h('div', null, diag.hasCurrent ? strings.diagCurrentYes : strings.diagCurrentNo),
           h('div', null, strings.diagSystem(strings.systemState[permission] || permission)),
           h('div', null, strings.diagSystemCount(diag.shown, diag.failed)),
-          h('div', null, strings.diagSource((diag.source || '—') + (diag.hasProjections ? ' · 投影 ✓' : ' · 投影 ✗')))
+          h(
+            'div',
+            null,
+            strings.diagSource(
+              (diag.source || '—') + ' · ' + (diag.hasProjections ? strings.diagProjectionOn : strings.diagProjectionOff)
+            )
+          )
         )
       );
     }
@@ -1021,6 +1077,7 @@ window.__ModuleLoader__.load({
     function ToastStack(props) {
       const tn = props.tn;
       const catalog = props.catalog;
+      const panelActive = props.panelActive === true;
       const strings = tn.strings;
       const chime = tn.chime;
       const settings = useSettings();
@@ -1036,7 +1093,7 @@ window.__ModuleLoader__.load({
         const timestamp = Date.now();
         const focused =
           typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? document.hasFocus() : true;
-        const current = typeof catalog.current === 'string' ? catalog.current : undefined;
+        const current = currentSessionId(byId, panelActive);
         const next = Object.create(null);
         const finished = [];
         let suppressed = 0;
@@ -1196,7 +1253,7 @@ window.__ModuleLoader__.load({
           }
           return merged.slice(-MAX_TOASTS);
         });
-      }, [chime, strings, tn]);
+      }, [chime, panelActive, strings, tn]);
 
       /*
        * Data-driven detection. A hidden window throttles React's rendering, so a
@@ -1369,8 +1426,23 @@ window.__ModuleLoader__.load({
       return h(ToastStack, Object.assign({}, props, { catalog }));
     }
 
-    function Entry(props) {
+    /** Reads the panel state; a separate component so the hook never branches. */
+    function PanelAwareEntry(props) {
+      /* `!= null` on purpose: a missing field must read as "no panel", not as an
+         open one, or the watched-Session suppression would silently stay off. */
+      const panelActive = props.usePanelInfo((info) => info != null && info.activePanelId != null) === true;
+      return h(SessionEntry, Object.assign({}, props, { panelActive }));
+    }
+
+    function SessionEntry(props) {
       return typeof props.useSessions === 'function' ? h(HookedLayer, props) : h(ServiceLayer, props);
+    }
+
+    function Entry(props) {
+      /* `shell.overlay` lists `usePanelInfo` among its standard props. */
+      return typeof props.usePanelInfo === 'function'
+        ? h(PanelAwareEntry, props)
+        : h(SessionEntry, Object.assign({}, props, { panelActive: false }));
     }
 
     function apply(ctx) {
@@ -1390,6 +1462,8 @@ window.__ModuleLoader__.load({
           window.removeEventListener('pointerdown', unlock, true);
           window.removeEventListener('keydown', unlock, true);
           window.removeEventListener('touchstart', unlock, true);
+          chime.close();
+          if (activeChime === chime) activeChime = null;
         };
       });
 
