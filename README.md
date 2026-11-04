@@ -33,6 +33,17 @@
 
 插件是标准的 Harness bundle（`dsh.bundle.patch` + 可选的 `dsh.client`），没有任何 npm 依赖、没有构建步骤。
 
+### 把这段话直接发给朋友的 DSH Agent
+
+> 把这个仓库装成 DeepSeek Harness 插件：先 `git clone https://github.com/lilliquidbird/dsh-turn-notifier` 到本地任意目录，然后用 `plugin_manager` 的 `install_bundle`，target 传那个目录的**绝对路径**；装完告诉我刷新页面。这个包没有 npm 依赖、没有构建步骤，不需要批准任何 build script。
+
+Agent 需要知道的四点：
+
+1. 这是标准 Harness bundle：`dsh.bundle.patch` 指向 `cordis.patch.yml`，Client 半由 `dsh.client` 声明
+2. `install_bundle` 的 target 必须是**绝对目录路径**，不是 git URL
+3. 装完必须刷新一次页面（`Ctrl+R`），客户端代码才会加载
+4. 刷新后右下角会出现一张"完成提醒已就绪"的卡片，看到它就算装好了
+
 **方式一：让 Agent 装（推荐）**
 
 把目录放到任意位置，然后在 DSH 里让 Agent 执行：
