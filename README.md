@@ -5,7 +5,7 @@
 - **任务跑完** → 右下角弹一张卡片 + 一声提示音
 - **Agent 需要你回答** → 换一声"疑问音"，弹一张琥珀色卡片，标题就是它问你的问题
 
-纯 **Client 半**插件：不碰 Host、不发起任何网络请求、不上报任何数据。
+Host + Client 两半：Host 负责在后台弹**真正的 Windows 通知**（页面最小化、切到别的程序都有效），Client 负责窗口内的卡片、字号和提示音。不发起任何网络请求、不上报任何数据。
 
 ---
 
@@ -18,7 +18,7 @@
 | Agent 提问、等你回答 | 疑问音 + 琥珀色 `?` 卡片（问题原文 + 来源会话） |
 | 一次问多个问题 | 合并成一张卡，标注"共 N 个问题" |
 | 子代理完成 / 提问 | 忽略 |
-| DSH 不在前台 | 追加一条 Windows 系统通知，点击跳回该会话 |
+| DSH 不在前台 | Host 进程直接弹一条 Windows 系统通知，不依赖页面是否在前台、是否被节流 |
 | 点击卡片 | 跳回对应会话 |
 
 ## 可调项（插件页 → 完成提醒 → 提醒设置）
@@ -26,7 +26,7 @@
 - 卡片宽度 320–560px、字号 85%–150%
 - 提示音六选一（经典双音 / 清脆 / 木琴 / 琶音 / 钟声 / 水滴），选中即试听
 - 音量 0–100%、一键静音
-- 系统通知开关（DSH 不在前台时用 Windows 通知）
+- 系统通知：桌面版由 Host 直接发，不受页面状态影响；只有用浏览器打开 GUI 时才会出现页面侧的通知开关
 - 预览卡片 / 预览提问 / 试听 / 恢复默认
 
 ## 安装
@@ -35,14 +35,15 @@
 
 ### 把这段话直接发给朋友的 DSH Agent
 
-> 把这个仓库装成 DeepSeek Harness 插件：先 `git clone https://github.com/lilliquidbird/dsh-turn-notifier` 到本地任意目录，然后用 `plugin_manager` 的 `install_bundle`，target 传那个目录的**绝对路径**；装完告诉我刷新页面。这个包没有 npm 依赖、没有构建步骤，不需要批准任何 build script。
+> 把这段话直接发给朋友的 DSH Agent：先 `git clone https://github.com/lilliquidbird/dsh-turn-notifier` 到本地任意目录，然后用 `plugin_manager` 的 `install_bundle`，target 传那个目录的**绝对路径**；装完刷新页面，并**重启一次 DSH**（宿主半的 Windows 通知要重启后才加载）。这个包没有 npm 依赖、没有构建步骤，不需要批准任何 build script。
 
-Agent 需要知道的四点：
+Agent 需要知道的五点：
 
 1. 这是标准 Harness bundle：`dsh.bundle.patch` 指向 `cordis.patch.yml`，Client 半由 `dsh.client` 声明
 2. `install_bundle` 的 target 必须是**绝对目录路径**，不是 git URL
-3. 装完必须刷新一次页面（`Ctrl+R`），客户端代码才会加载
+3. 装完刷新一次页面（`Ctrl+R`），客户端代码才会加载
 4. 刷新后右下角会出现一张"完成提醒已就绪"的卡片，看到它就算装好了
+5. **再重启一次 DSH**：宿主半负责后台的 Windows 通知，只在进程启动时加载
 
 **方式一：让 Agent 装（推荐）**
 
@@ -62,8 +63,9 @@ plugin_manager install_bundle  target = <这个目录的绝对路径>
 3. 在同一个 `package.json` 的 `dsh.profile.bundles` 数组里加入 `"@local/dsh-turn-notifier"`
 4. 在该 profile 目录执行 `pnpm install`
 5. 刷新 DSH 页面（Ctrl+R）
+6. 重启一次 DSH，让宿主半加载
 
-> 装完刷新一次页面，右下角会出现"完成提醒已就绪"的欢迎卡片。
+> 刷新后右下角会出现"完成提醒已就绪"的欢迎卡片；重启之后，DSH 在后台时才会弹 Windows 通知。
 
 ## 兼容性
 
@@ -92,6 +94,9 @@ plugin_manager install_bundle  target = <这个目录的绝对路径>
 - 设置存在 cookie 而不是 localStorage：DSH 桌面版每次启动端口随机，localStorage 按 origin 隔离会丢设置，cookie 不区分端口。
 - 检测在页面侧完成；如果页面被浏览器完全冻结（而非仅隐藏），可能漏一次提醒。
 - 提问提示音是固定音色，不跟随"提示音"下拉。
+- 后台通知由 Host 调 PowerShell 发（每次约 0.3–0.6 秒启动开销）；点击通知只会打开通知中心，不能直接跳回会话（没有注册 COM 激活器）。
+- Windows 的「专注助手 / 勿扰模式」会把通知折进通知中心而不弹横幅，这是系统行为。
+- 宿主半改动后必须重启 DSH 才生效，页面刷新不算。
 
 ## License
 

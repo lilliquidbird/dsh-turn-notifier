@@ -612,6 +612,15 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Electron desktop: the Host half already emits the native toast. */
+    function isElectronShell() {
+      try {
+        return typeof navigator !== 'undefined' && /\bElectron\//.test(String(navigator.userAgent || ''));
+      } catch (error) {
+        return false;
+      }
+    }
+
     /**
      * Windows toast through the renderer's Notification API, which Electron
      * maps onto a native notification. Returns false when it cannot show one.
@@ -620,6 +629,7 @@ window.__ModuleLoader__.load({
       try {
         if (settingsStore.get().systemNotification !== true) return false;
         if (currentNotificationPermission() !== 'granted') return false;
+        if (isElectronShell()) return false;
         const notification = new window.Notification(payload.title, {
           body: payload.body,
           silent: true,
@@ -841,15 +851,17 @@ window.__ModuleLoader__.load({
             onChange: (event) => settingsStore.set({ volume: Number(event.target.value) / 100 }),
           })
         ),
-        h(
-          SettingRow,
-          { label: strings.systemNotify, hint: strings.systemNotifyHint },
-          h(Switch, {
-            checked: settings.systemNotification,
-            label: strings.systemNotify,
-            onChange: (next) => settingsStore.set({ systemNotification: next }),
-          })
-        ),
+        isElectronShell()
+          ? null
+          : h(
+              SettingRow,
+              { label: strings.systemNotify, hint: strings.systemNotifyHint },
+              h(Switch, {
+                checked: settings.systemNotification,
+                label: strings.systemNotify,
+                onChange: (next) => settingsStore.set({ systemNotification: next }),
+              })
+            ),
         h(
           'div',
           { className: 'tn-set-actions' },
@@ -881,34 +893,36 @@ window.__ModuleLoader__.load({
             },
             strings.previewSound
           ),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'tn-btn',
-              disabled:
-                !settings.systemNotification ||
-                permission === 'unsupported' ||
-                permission === 'denied',
-              onClick: () => {
-                const fire = () =>
-                  showSystemNotification({
-                    title: strings.demoTitle,
-                    body: strings.systemDemoBody,
-                    tag: 'turn-notifier:preview',
-                  });
-                if (currentNotificationPermission() !== 'default') {
-                  fire();
-                  return;
-                }
-                /* Wait for the prompt: a fixed delay raced a slow "Allow". */
-                requestNotificationPermission().then((state) => {
-                  if (state === 'granted') fire();
-                });
-              },
-            },
-            strings.testSystemNotify
-          ),
+          isElectronShell()
+            ? null
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'tn-btn',
+                  disabled:
+                    !settings.systemNotification ||
+                    permission === 'unsupported' ||
+                    permission === 'denied',
+                  onClick: () => {
+                    const fire = () =>
+                      showSystemNotification({
+                        title: strings.demoTitle,
+                        body: strings.systemDemoBody,
+                        tag: 'turn-notifier:preview',
+                      });
+                    if (currentNotificationPermission() !== 'default') {
+                      fire();
+                      return;
+                    }
+                    /* Wait for the prompt: a fixed delay raced a slow "Allow". */
+                    requestNotificationPermission().then((state) => {
+                      if (state === 'granted') fire();
+                    });
+                  },
+                },
+                strings.testSystemNotify
+              ),
           h(
             'button',
             {
