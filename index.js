@@ -57,6 +57,9 @@ function showToast(title, body, options) {
   const opts = options || {};
   const kind = opts.kind || 'done';
   if (!IS_WINDOWS) return;
+  // Synthetic events from the self-tests must never reach the real notification
+  // center: a test run that pops live toasts is indistinguishable from a bug.
+  if (process.env.DSH_TURN_NOTIFIER_DRY === '1') return;
   trace({ at: new Date().toISOString(), kind });
   try {
     const args = [
@@ -99,8 +102,12 @@ function localizedReason(displayReason, fallback) {
 }
 
 export function apply(ctx) {
-  markBoot();
-  trace({ at: new Date().toISOString(), kind: 'boot', version: pluginVersion() });
+  // A test run must not overwrite the boot marker: that file is how a real DSH
+  // start is distinguished from a simulated one.
+  if (process.env.DSH_TURN_NOTIFIER_DRY !== '1') {
+    markBoot();
+    trace({ at: new Date().toISOString(), kind: 'boot', version: pluginVersion() });
+  }
 
   const service = (name) => {
     try {
