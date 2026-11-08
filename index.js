@@ -1,44 +1,79 @@
 /**
- * Host half of the completion / question notifier.
+ * Host half of the completion / question / approval notifier.
  *
- * The Client half draws the in-app card. This half owns the *system* alert:
- * it watches committed session events and asks Windows to show a real toast,
- * so the alert still appears while the GUI is hidden, minimised, or in the
- * background. `toast.ps1` skips the toast when the DSH window is already in
- * front, where the in-app card is the better surface.
+ * The Client half draws the in-app card. This half owns every *system* alert
+ * that has to survive the page being hidden or throttled: it watches committed
+ * session events and approval / question waterfalls, then asks Windows to show
+ * a real toast. `toast.ps1` stays quiet when the DSH window is already in front,
+ * where the in-app surface is the better one.
  */
 import { spawn } from 'node:child_process';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'toast.ps1');
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
+const SCRIPT_PATH = join(PLUGIN_DIR, 'toast.ps1');
 const IS_WINDOWS = process.platform === 'win32';
+const STATE_DIR = join(tmpdir(), 'dsh-turn-notifier');
+
+function pluginVersion() {
+  try {
+    return JSON.parse(readFileSync(join(PLUGIN_DIR, 'package.json'), 'utf8')).version || 'unknown';
+  } catch (error) {
+    return 'unknown';
+  }
+}
+
+/** Boot marker + event trace, so the host half can be verified without a UI. */
+function trace(entry) {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    appendFileSync(join(STATE_DIR, 'events.jsonl'), JSON.stringify(entry) + '\n');
+  } catch (error) {
+    /* diagnostics are best effort */
+  }
+}
+
+function markBoot() {
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(
+      join(STATE_DIR, 'host-boot.json'),
+      JSON.stringify({ pid: process.pid, at: new Date().toISOString(), version: pluginVersion() })
+    );
+  } catch (error) {
+    /* ignore */
+  }
+}
 
 /** Fire-and-forget: a failed toast must never disturb the agent loop. */
-function showToast(title, body) {
+function showToast(title, body, options) {
+  const opts = options || {};
+  const kind = opts.kind || 'done';
   if (!IS_WINDOWS) return;
+  trace({ at: new Date().toISOString(), kind });
   try {
-    const child = spawn(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-WindowStyle',
-        'Hidden',
-        '-File',
-        SCRIPT_PATH,
-        '-Title',
-        String(title || '').slice(0, 120),
-        '-Body',
-        String(body || '').slice(0, 200),
-      ],
-      { windowsHide: true, stdio: 'ignore' }
-    );
+    const args = [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-WindowStyle',
+      'Hidden',
+      '-File',
+      SCRIPT_PATH,
+      '-Title',
+      String(title || '').slice(0, 120),
+      '-Body',
+      String(body || '').slice(0, 200),
+    ];
+    if (opts.sound === true) args.push('-Sound');
+    const child = spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore' });
     child.on('error', () => {});
     if (typeof child.unref === 'function') child.unref();
   } catch (error) {
-    /* ignore: notification is best effort */
+    /* notification is best effort */
   }
 }
 
@@ -62,7 +97,19 @@ function isRootSession(session) {
   return true;
 }
 
+function localizedReason(displayReason, fallback) {
+  if (displayReason && typeof displayReason === 'object') {
+    if (typeof displayReason.zh === 'string' && displayReason.zh.trim() !== '') return displayReason.zh.trim();
+    if (typeof displayReason.en === 'string' && displayReason.en.trim() !== '') return displayReason.en.trim();
+  }
+  if (typeof fallback === 'string' && fallback.trim() !== '') return fallback.trim();
+  return '需要你确认后才能继续';
+}
+
 export function apply(ctx) {
+  markBoot();
+  trace({ at: new Date().toISOString(), kind: 'boot', version: pluginVersion() });
+
   const recent = new Map();
 
   /** Suppress duplicates that arrive through more than one event edge. */
@@ -84,13 +131,37 @@ export function apply(ctx) {
       try {
         if (!event || event.type !== 'turn/end') return;
         const reason = event.data && event.data.reason;
-        if (!reason || reason.kind !== 'completed') return;
+        const kind = reason && reason.kind;
+        if (kind !== 'completed' && kind !== 'error') return;
         if (!isRootSession(session)) return;
-        if (!claim('done:' + session.id, 3000)) return;
-        showToast(sessionTitle(ctx, session), '任务已完成');
+        if (!claim('turn:' + session.id, 3000)) return;
+        if (kind === 'completed') {
+          showToast(sessionTitle(ctx, session), '任务已完成', { kind: 'done' });
+        } else {
+          showToast(sessionTitle(ctx, session), '任务出错了，需要你看一眼', { kind: 'error', sound: true });
+        }
       } catch (error) {
         /* never break the event feed */
       }
+    })
+  );
+
+  ctx.effect(() =>
+    ctx.on('approval/request', (request, next) => {
+      try {
+        const agent = request && request.agent;
+        const session = agent ? ctx.sessions.get(agent.id) : undefined;
+        const key = 'approval:' + (agent ? agent.id : '?') + ':' + String((request && request.callId) || '');
+        if (session && isRootSession(session) && claim(key, 1500)) {
+          showToast('需要你确认', localizedReason(request && request.displayReason, request && request.reason), {
+            kind: 'approval',
+            sound: true,
+          });
+        }
+      } catch (error) {
+        /* a toast failure must not block the approval */
+      }
+      return next();
     })
   );
 
@@ -106,7 +177,7 @@ export function apply(ctx) {
             first && typeof first.question === 'string' && first.question.trim() !== ''
               ? first.question.trim()
               : '需要你回答';
-          showToast('需要你回答', text);
+          showToast('需要你回答', text, { kind: 'question', sound: true });
         }
       } catch (error) {
         /* a toast failure must not block the question */

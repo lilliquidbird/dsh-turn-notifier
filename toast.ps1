@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Title,
     [Parameter(Mandatory = $true)][string]$Body,
+    [switch]$Sound,
     [switch]$Force
 )
 
@@ -47,9 +48,15 @@ try {
     $texts.Item(0).AppendChild($template.CreateTextNode($Title)) | Out-Null
     $texts.Item(1).AppendChild($template.CreateTextNode($Body)) | Out-Null
 
-    # Silent: the page already plays the user's chosen chime.
     $audio = $template.CreateElement('audio')
-    $audio.SetAttribute('silent', 'true')
+    if ($Sound) {
+        # Something needs a person: use the reminder tone so it stands apart
+        # from the page's own completion chime.
+        $audio.SetAttribute('src', 'ms-winsoundevent:Notification.Reminder')
+    } else {
+        # The page already plays the user's chosen chime for completions.
+        $audio.SetAttribute('silent', 'true')
+    }
     $template.DocumentElement.AppendChild($audio) | Out-Null
 
     $toast = New-Object Windows.UI.Notifications.ToastNotification $template
