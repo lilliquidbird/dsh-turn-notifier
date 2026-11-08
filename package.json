@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-turn-notifier",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "private": true,
   "type": "module",
   "description": "ChatGPT-style completion and question alerts with a chime for DeepSeek Harness: a bottom-right toast and a Windows notification when a session finishes its turn or needs your answer.",

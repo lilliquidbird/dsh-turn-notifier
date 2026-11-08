@@ -3,9 +3,13 @@
  *
  * The Client half draws the in-app card. This half owns every *system* alert
  * that has to survive the page being hidden or throttled: it watches committed
- * session events and approval / question waterfalls, then asks Windows to show
- * a real toast. `toast.ps1` stays quiet when the DSH window is already in front,
- * where the in-app surface is the better one.
+ * session events, approval / question waterfalls and background-job settlement,
+ * then asks Windows to show a real toast. `toast.ps1` stays quiet when the DSH
+ * window is already in front, where the in-app surface is the better one.
+ *
+ * Services are read through `ctx.get(...)` rather than injected properties:
+ * Cordis throws on an uninjected `ctx.sessions` lookup, and a plugin that must
+ * never break the agent loop cannot afford that throw on a hot path.
  */
 import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -77,18 +81,6 @@ function showToast(title, body, options) {
   }
 }
 
-function sessionTitle(ctx, session) {
-  try {
-    const snapshot = ctx.sessionTitle.get(session);
-    if (snapshot && typeof snapshot.title === 'string' && snapshot.title.trim() !== '') {
-      return snapshot.title.trim();
-    }
-  } catch (error) {
-    /* fall through to the id prefix */
-  }
-  return String(session && session.id ? session.id : '').slice(0, 8);
-}
-
 function isRootSession(session) {
   const header = session && session.header;
   if (!header) return false;
@@ -109,6 +101,39 @@ function localizedReason(displayReason, fallback) {
 export function apply(ctx) {
   markBoot();
   trace({ at: new Date().toISOString(), kind: 'boot', version: pluginVersion() });
+
+  const service = (name) => {
+    try {
+      return typeof ctx.get === 'function' ? ctx.get(name) : undefined;
+    } catch (error) {
+      return undefined;
+    }
+  };
+
+  const sessions = service('sessions');
+  const titles = service('sessionTitle');
+  const jobs = service('jobs');
+
+  const findSession = (agent) => {
+    try {
+      if (!sessions || !agent) return undefined;
+      return sessions.get(agent.id);
+    } catch (error) {
+      return undefined;
+    }
+  };
+
+  const titleOf = (session) => {
+    try {
+      const snapshot = titles ? titles.get(session) : undefined;
+      if (snapshot && typeof snapshot.title === 'string' && snapshot.title.trim() !== '') {
+        return snapshot.title.trim();
+      }
+    } catch (error) {
+      /* fall through to the id prefix */
+    }
+    return String(session && session.id ? session.id : '').slice(0, 8);
+  };
 
   const recent = new Map();
 
@@ -136,9 +161,9 @@ export function apply(ctx) {
         if (!isRootSession(session)) return;
         if (!claim('turn:' + session.id, 3000)) return;
         if (kind === 'completed') {
-          showToast(sessionTitle(ctx, session), '任务已完成', { kind: 'done' });
+          showToast(titleOf(session), '任务已完成', { kind: 'done' });
         } else {
-          showToast(sessionTitle(ctx, session), '任务出错了，需要你看一眼', { kind: 'error', sound: true });
+          showToast(titleOf(session), '任务出错了，需要你看一眼', { kind: 'error', sound: true });
         }
       } catch (error) {
         /* never break the event feed */
@@ -150,7 +175,7 @@ export function apply(ctx) {
     ctx.on('approval/request', (request, next) => {
       try {
         const agent = request && request.agent;
-        const session = agent ? ctx.sessions.get(agent.id) : undefined;
+        const session = findSession(agent);
         const key = 'approval:' + (agent ? agent.id : '?') + ':' + String((request && request.callId) || '');
         if (session && isRootSession(session) && claim(key, 1500)) {
           showToast('需要你确认', localizedReason(request && request.displayReason, request && request.reason), {
@@ -169,7 +194,7 @@ export function apply(ctx) {
     ctx.on('user-questions/request', (request, next) => {
       try {
         const agent = request && request.agent;
-        const session = agent ? ctx.sessions.get(agent.id) : undefined;
+        const session = findSession(agent);
         if (session && isRootSession(session) && claim('ask:' + session.id, 1500)) {
           const questions = Array.isArray(request.questions) ? request.questions : [];
           const first = questions[0];
@@ -185,4 +210,28 @@ export function apply(ctx) {
       return next();
     })
   );
+
+  /*
+   * Background jobs outlive the turn that started them, so a settled job would
+   * otherwise finish silently. Mirror the job registry's feed and report it.
+   */
+  if (jobs && jobs.events && typeof jobs.events.subscribe === 'function') {
+    ctx.effect(() =>
+      jobs.events.subscribe({ owners: 'all' }, (event) => {
+        try {
+          if (!event || event.type !== 'settled' || !event.job) return;
+          const view = event.job;
+          if (!claim('job:' + view.id, 5000)) return;
+          const failed = view.status === 'failed' || view.status === 'killed';
+          showToast(
+            String(view.label || '后台任务').slice(0, 80),
+            failed ? '后台任务失败或被停止' : '后台任务已完成',
+            { kind: 'job', sound: failed }
+          );
+        } catch (error) {
+          /* never break the job feed */
+        }
+      })
+    );
+  }
 }
